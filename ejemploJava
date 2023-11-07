@@ -1,0 +1,287 @@
+//Fragmentos de código tomados de una aplicación móvil desarrollada en Java que se
+//comunica con firebase almacenando y leyendo datos, además usa la función de 
+//autenticación que esta proporciona.
+//En este caso se tiene una clase controlador que actúa similar a la clase fachada
+//este es quien se encarga de interactuar con los métodos de lectura y escritura de
+//firebase. Desde las clases Activity donde se requiere esta información que son las
+//clases clientes se genera una instancia del controlador y se le pasan los argumentos
+//minimos que este necesita para realizar las consultas. Este controlador tiene a su
+//disposición todos los metodos para interactuar con firebase, pero desde el codigo cliente
+//solo se envian argumentos diferenciadores que el controlador compara y puede determinar
+//la función específica que se desea.
+//El acoplamiento se ve reflejado en este código, ya que el controlador permite separar
+//las consultas a la base de datos del código funcional de las actividades de la app
+//y en el caso que se necesite cambiar de provedor de servicios de almacenamiento, solo
+//será necesario actualizar las clases correspondientes a firebase.
+
+public interface ControladorCallback {
+    void respuestaConsultaControlador(String mJsonRespuesta);
+    void fallaPresentada(Exception e);
+}
+
+public interface FirebaseCallback {
+    void respuestaConsultaFirebase(String mJsonRespuesta);
+    void fallaPresentada(Exception e);
+}
+
+public class Controlador {
+    private static Controlador instance;
+    private final AutenticacionFirebase mAutenticacionFirebase;
+    private final EscribirFirebaseCF mEscribirFirebaseCF;
+    private final EscribirFirebaseRT mEscribirFirebaseRT;
+    private final LeerFirebaseCF mLeerFirebaseCF;
+    private final LeerFirebaseRT mLeerFirebaseRT;
+    private Gson mConvertidor;
+
+    private Controlador() {
+        mAutenticacionFirebase = new AutenticacionFirebase();
+        mEscribirFirebaseCF = new EscribirFirebaseCF();
+        mEscribirFirebaseRT = new EscribirFirebaseRT();
+        mLeerFirebaseCF = new LeerFirebaseCF();
+        mLeerFirebaseRT = new LeerFirebaseRT();
+        mConvertidor = new Gson();
+    }
+
+    public static synchronized Controlador getInstance() {
+        if (instance == null) {
+            instance = new Controlador();
+        }
+        return instance;
+    }
+
+    public void procesarAccion(Peticion mPeticion, ControladorCallback callback) {
+
+        switch (mPeticion.getmAccion()) {
+
+            case Constantes.AUTENTICAR_RIDER:
+
+                AutenticarUsuarioThread mAutenticarUsuarioThread = new AutenticarUsuarioThread(mPeticion, callback);
+                mAutenticarUsuarioThread.start();
+
+            break;
+
+            case Constantes.OBTENER_RIDER_AUTENTICADO:
+
+                ObtenerRiderAutenticadoThread mObtenerRiderAutenticadoThread = new ObtenerRiderAutenticadoThread(callback);
+                mObtenerRiderAutenticadoThread.start();
+
+            break;
+
+      }
+    }
+}
+
+class AutenticarUsuarioThread extends Thread{
+        private Peticion mPeticion;
+        private ControladorCallback callback;
+
+        public AutenticarUsuarioThread(Peticion mPeticion, ControladorCallback callback){
+            this.mPeticion = mPeticion;
+            this.callback = callback;
+        }
+
+        @Override
+        public void run() {
+            String[] mDatosUsuario = mPeticion.getmArgumentos().split(", ");
+            Usuario mUsuario = new Usuario(mDatosUsuario[0], mDatosUsuario[1]);
+
+            mAutenticacionFirebase.autenticarUsuario(mUsuario, new FirebaseCallback() {
+                @Override
+                public void respuestaConsultaFirebase(String mJsonRespuesta) {
+                    callback.respuestaConsultaControlador(mJsonRespuesta);
+                }
+
+                @Override
+                public void fallaPresentada(Exception e) {
+                    callback.fallaPresentada(e);
+                }
+            });
+        }
+    }
+
+class ObtenerRiderAutenticadoThread extends Thread {
+        private ControladorCallback callback;
+
+        public ObtenerRiderAutenticadoThread(ControladorCallback callback){
+            this.callback = callback;
+        }
+
+        @Override
+        public void run() {
+            mLeerFirebaseCF.obtenerRiderAutenticado(new FirebaseCallback() {
+                @Override
+                public void respuestaConsultaFirebase(String mJsonRespuesta) {
+                    callback.respuestaConsultaControlador(mJsonRespuesta);
+                }
+
+                @Override
+                public void fallaPresentada(Exception e) {
+                    callback.fallaPresentada(e);
+                }
+            });
+
+        }
+    }
+
+    private void autenticarUsuario(String mNombreUsuario, String mContraseniaUsuario){
+        Usuario mUsuario = new Usuario();
+        boolean mBandera = false;
+
+        //Comprobar los campos ingresados
+        if(mNombreUsuario.isEmpty()){
+            showToast("Por favor, ingrese su nombre de usuario.");
+        }else{
+            if (mContraseniaUsuario.isEmpty()){
+                showToast("Por favor, ingrese su contraseña.");
+            } else {
+                mUsuario.setmNombreUsuario(mNombreUsuario);
+                mUsuario.setmContrasenia(mContraseniaUsuario);
+                binding.progressBarLogin.setActivated(true);
+                binding.progressBarLogin.setVisibility(View.VISIBLE);
+                mBandera = true;
+            }
+        }
+
+        if (mBandera){
+            //Construir la peticion
+            Peticion mPeticion = new Peticion();
+            mPeticion.setmAccion(Constantes.AUTENTICAR_RIDER);
+            mPeticion.setmArgumentos(mUsuario.getmNombreUsuario()+", "+mUsuario.getmContrasenia());
+
+            Controlador.getInstance().procesarAccion(mPeticion, new ControladorCallback() {
+                @Override
+                public void respuestaConsultaControlador(String mJsonRespuesta) {
+                    try{
+                        JSONObject mAuxRespuesta = new JSONObject(mJsonRespuesta);
+
+                        if (mAuxRespuesta.getBoolean(Constantes.ESTADO_AUTENTICACION)){
+                            showToast("Sesión iniciada, bienvenido.");
+                            iniciarGestionRiderActivity();
+                        } else {
+                            showToast("Usuario y/o contraseña incorrecta.");
+                        }
+
+                        binding.progressBarLogin.setActivated(false);
+                        binding.progressBarLogin.setVisibility(View.INVISIBLE);
+
+                    }catch (Exception e){
+                        showToast("Error presentado: "+e.getMessage());
+                    }
+                }
+
+                @Override
+                public void fallaPresentada(Exception e) {
+                    showToast("Falló el inicio de sesión.");
+                }
+            });
+        }
+    }
+
+    private void obtenerRiderAutenticado(){
+        Peticion mPeticion = new Peticion(Constantes.OBTENER_RIDER_AUTENTICADO);
+
+        Controlador.getInstance().procesarAccion(mPeticion, new ControladorCallback() {
+            @Override
+            public void respuestaConsultaControlador(String mJsonRespuesta) {
+                try {
+                    if (mJsonRespuesta.equals("")) {
+                        showToast("Usuario no autorizado.");
+                        cerrarSesion();
+                    } else {
+                        Rider mRider = mConvertidor.fromJson(mJsonRespuesta, Rider.class);
+                        setearDatosRider(mRider);
+                    }
+                } catch (Exception e){
+                    showToast("Error presentado: "+e.getMessage());
+                }
+
+
+            }
+
+            @Override
+            public void fallaPresentada(Exception e) {
+                showToast("Error presentado: "+e.getMessage());
+            }
+        });
+    }
+
+    public class AutenticacionFirebase {
+    private FirebaseAuth mFirebaseAuth;
+    private FirebaseUser mFirebaseUser;
+    private Gson mConvertidor;
+
+    public AutenticacionFirebase(){
+        mFirebaseAuth = FirebaseAuth.getInstance();
+        mConvertidor = new Gson();
+    }
+
+    public void autenticarUsuario(Usuario mUsuario, FirebaseCallback callback){
+        mFirebaseAuth.signInWithEmailAndPassword(mUsuario.getmNombreUsuario(), mUsuario.getmContrasenia())
+                .addOnCompleteListener(new OnCompleteListener<AuthResult>() {
+                    @Override
+                    public void onComplete(@NonNull Task<AuthResult> task) {
+                        JSONObject mAuxRespuesta = new JSONObject();
+                        String mJsonRespuesta = "";
+                        try {
+                            mAuxRespuesta.put(Constantes.ESTADO_AUTENTICACION, false);
+
+                            if (task.isSuccessful()) {
+                                mAuxRespuesta.put(Constantes.ESTADO_AUTENTICACION, true);
+                                mJsonRespuesta = mAuxRespuesta.toString();
+                            } else {
+                                mJsonRespuesta = mAuxRespuesta.toString();
+                            }
+
+                            callback.respuestaConsultaFirebase(mJsonRespuesta);
+                        } catch (Exception e) {
+                            callback.fallaPresentada(e);
+                        }
+                    }
+                }).addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        callback.fallaPresentada(e);
+                    }
+                });
+    }
+}
+
+    public class LeerFirebaseCF {
+    private FirebaseFirestore mFirebaseFirestore;
+    private AutenticacionFirebase mAutenticacionFirebase;
+    private Gson mConvertidor;
+
+    public LeerFirebaseCF(){
+        mFirebaseFirestore = FirebaseFirestore.getInstance();
+        mAutenticacionFirebase = new AutenticacionFirebase();
+        mConvertidor = new GsonBuilder().setDateFormat("EEE MMM dd HH:mm:ss 'GMT'Z yyyy").create();
+    }
+
+    public void obtenerRiderAutenticado(FirebaseCallback callback) {
+        DocumentReference docRef = mFirebaseFirestore.collection(Constantes.RIDERS_COLECCION)
+                                    .document(mAutenticacionFirebase.obtenerIdUsuarioAutenticado());
+
+        docRef.get().addOnSuccessListener(new OnSuccessListener<DocumentSnapshot>() {
+            @Override
+            public void onSuccess(DocumentSnapshot documentSnapshot) {
+                String mJsonRespuesta = "";
+                try {
+                    if (documentSnapshot.exists()){
+                        Rider mRider = documentSnapshot.toObject(Rider.class);
+                        mJsonRespuesta = mConvertidor.toJson(mRider);
+                    }
+                } catch (Exception e) {
+                    callback.fallaPresentada(e);
+                }
+
+                callback.respuestaConsultaFirebase(mJsonRespuesta);
+            }
+        }).addOnFailureListener(new OnFailureListener() {
+            @Override
+            public void onFailure(@NonNull Exception e) {
+                callback.fallaPresentada(e);
+            }
+        });
+    }  
+
+}
